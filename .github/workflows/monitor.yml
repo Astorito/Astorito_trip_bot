@@ -42,7 +42,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ALERT_THRESHOLD: "300"
+          ALERT_THRESHOLD: "350"
         run: |
           for i in 1 2 3 4 5; do
             echo "--- Pasada $i/5 ---"
