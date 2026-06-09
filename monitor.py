@@ -1,20 +1,14 @@
 """
 Monitor de precios de LEVEL (flylevel.com) con alertas por Telegram.
 
-Recorre las rutas/tipos de viaje configurados en config.py para los próximos N meses,
-busca precios por debajo del umbral y avisa por Telegram las ofertas nuevas.
-
 Uso:
-    python monitor.py            # corrida normal: consulta, filtra y avisa
-    python monitor.py --dry-run  # imprime lo parseado, NO envía Telegram ni guarda estado
-    python monitor.py --test-telegram  # manda un mensaje de prueba y sale
-
-Variables de entorno necesarias (para enviar Telegram):
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+    python monitor.py            # corrida normal
+    python monitor.py --dry-run  # imprime matches, NO envía ni guarda
+    python monitor.py --test-telegram
+    python monitor.py --loop     # 24/7 en bucle
 """
 
 import argparse
-import calendar
 import json
 import os
 import sys
@@ -31,7 +25,6 @@ import config
 # ---------------------------------------------------------------------------
 
 def load_state():
-    """Devuelve {clave_oferta: precio_avisado}. Clave = ruta|triptype|fecha."""
     try:
         with open(config.STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -44,8 +37,70 @@ def save_state(state):
         json.dump(state, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def offer_key(origin, dest, triptype, day):
-    return f"{origin}-{dest}|{triptype}|{day}"
+def offer_key(origin, dest, triptype, day, currency):
+    return f"{origin}-{dest}|{triptype}|{day}|{currency}"
+
+
+# ---------------------------------------------------------------------------
+# Fechas a escanear
+# ---------------------------------------------------------------------------
+
+def months_rolling(n):
+    """Próximos n meses desde hoy."""
+    today = date.today()
+    out = []
+    y, m = today.year, today.month
+    for _ in range(n):
+        out.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return out
+
+
+def months_for_range(start_str, end_str):
+    """Todos los (year, month) dentro del rango de fechas dado."""
+    start = date.fromisoformat(start_str)
+    end   = date.fromisoformat(end_str)
+    out = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        out.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return out
+
+
+def all_months_to_scan():
+    """Unión deduplicada: ventana rolling + rangos extra."""
+    months = set(months_rolling(config.MONTHS_AHEAD))
+    for (start_str, end_str) in config.EXTRA_DATE_RANGES:
+        months.update(months_for_range(start_str, end_str))
+    return sorted(months)
+
+
+def date_is_in_scope(day_str):
+    """True si la fecha cae en la ventana rolling O en algún rango extra."""
+    try:
+        d = date.fromisoformat(day_str)
+    except ValueError:
+        return False
+    today = date.today()
+    # Ventana rolling
+    rolling = months_rolling(config.MONTHS_AHEAD)
+    if rolling:
+        last_y, last_m = rolling[-1]
+        last_day = date(last_y, last_m, 28)  # margen conservador
+        if today <= d <= last_day:
+            return True
+    # Rangos extra
+    for (start_str, end_str) in config.EXTRA_DATE_RANGES:
+        if date.fromisoformat(start_str) <= d <= date.fromisoformat(end_str):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -58,53 +113,42 @@ def build_session():
     return s
 
 
-def fetch_calendar(session, origin, dest, triptype, year, month):
-    """Pega al endpoint del calendario y devuelve el JSON (o None si falla)."""
+def fetch_calendar(session, origin, dest, triptype, year, month, currency):
     p = config.PARAM_NAMES
     params = {
-        p["triptype"]: config.TRIPTYPE_VALUES.get(triptype, triptype),
-        p["origin"]: origin,
+        p["triptype"]:    config.TRIPTYPE_VALUES.get(triptype, triptype),
+        p["origin"]:      origin,
         p["destination"]: dest,
-        p["month"]: f"{month:02d}",
-        p["year"]: str(year),
-        p["currency"]: config.CURRENCY,
+        p["month"]:       f"{month:02d}",
+        p["year"]:        str(year),
+        p["currency"]:    currency,
     }
     try:
-        r = session.get(
-            config.API_BASE, params=params, timeout=config.REQUEST_TIMEOUT_SECONDS
-        )
+        r = session.get(config.API_BASE, params=params, timeout=config.REQUEST_TIMEOUT_SECONDS)
     except requests.RequestException as e:
-        print(f"  ! error de red {origin}->{dest} {triptype} {year}-{month:02d}: {e}")
+        print(f"  ! red {origin}->{dest} {triptype} {year}-{month:02d}: {e}")
         return None
-
     if r.status_code != 200:
-        print(
-            f"  ! HTTP {r.status_code} en {origin}->{dest} {triptype} "
-            f"{year}-{month:02d} (revisar endpoint/headers en PASO 0)"
-        )
+        print(f"  ! HTTP {r.status_code} {origin}->{dest} {triptype} {year}-{month:02d}")
         return None
-
     try:
         return r.json()
     except ValueError:
-        print(f"  ! respuesta no-JSON en {origin}->{dest} {triptype} {year}-{month:02d}")
         return None
 
 
 # ---------------------------------------------------------------------------
-# Parseo flexible del JSON -> [(fecha 'YYYY-MM-DD', precio float)]
+# Parseo
 # ---------------------------------------------------------------------------
 
 def _looks_like_day(item):
     if not isinstance(item, dict):
         return False
-    has_date = any(k in item for k in config.DATE_FIELD_CANDIDATES)
-    has_price = any(k in item for k in config.PRICE_FIELD_CANDIDATES)
-    return has_date and has_price
+    return (any(k in item for k in config.DATE_FIELD_CANDIDATES) and
+            any(k in item for k in config.PRICE_FIELD_CANDIDATES))
 
 
 def _find_day_list(obj):
-    """Busca recursivamente la primera lista de dicts con fecha + precio."""
     if isinstance(obj, list):
         if obj and any(_looks_like_day(x) for x in obj):
             return obj
@@ -128,7 +172,6 @@ def _extract_field(item, candidates):
 
 
 def _extract_tags(item):
-    """Devuelve la lista de tags del día (o [] si no hay)."""
     raw = _extract_field(item, config.TAGS_FIELD_CANDIDATES)
     if isinstance(raw, list):
         return [str(t).lower() for t in raw]
@@ -138,20 +181,17 @@ def _extract_tags(item):
 
 
 def parse_prices(payload):
-    """Devuelve lista de (fecha_str, precio_float, tags_list) por día con precio válido."""
     days = _find_day_list(payload)
     if not days:
         return []
-
     out = []
     for item in days:
         if not _looks_like_day(item):
             continue
-        raw_date = _extract_field(item, config.DATE_FIELD_CANDIDATES)
+        raw_date  = _extract_field(item, config.DATE_FIELD_CANDIDATES)
         raw_price = _extract_field(item, config.PRICE_FIELD_CANDIDATES)
         if raw_date is None or raw_price is None:
             continue
-        # El precio puede venir anidado en un dict (p.ej. {"amount": 199}).
         if isinstance(raw_price, dict):
             raw_price = _extract_field(raw_price, config.PRICE_FIELD_CANDIDATES)
         try:
@@ -169,60 +209,50 @@ def parse_prices(payload):
 # ---------------------------------------------------------------------------
 
 def _chat_ids():
-    """Lista de chat_ids desde TELEGRAM_CHAT_ID (uno o varios separados por coma)."""
     raw = os.environ.get("TELEGRAM_CHAT_ID", "")
     return [c.strip() for c in raw.split(",") if c.strip()]
 
 
 def send_telegram(text):
-    """Envía el mensaje a todos los chat_ids. True si llegó al menos a uno."""
-    token = os.environ.get("TELEGRAM_TOKEN")
+    token    = os.environ.get("TELEGRAM_TOKEN")
     chat_ids = _chat_ids()
     if not token or not chat_ids:
-        print("  ! faltan TELEGRAM_TOKEN / TELEGRAM_CHAT_ID; no se envía.")
+        print("  ! faltan TELEGRAM_TOKEN / TELEGRAM_CHAT_ID")
         return False
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    url  = f"https://api.telegram.org/bot{token}/sendMessage"
     sent = False
     for chat_id in chat_ids:
         try:
-            r = requests.post(
-                url,
-                json={
-                    "chat_id": chat_id,
-                    "text": text,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                },
-                timeout=config.REQUEST_TIMEOUT_SECONDS,
-            )
-            if r.status_code != 200:
-                print(f"  ! Telegram HTTP {r.status_code} (chat {chat_id}): {r.text[:200]}")
-            else:
+            r = requests.post(url, json={
+                "chat_id": chat_id, "text": text,
+                "parse_mode": "HTML", "disable_web_page_preview": True,
+            }, timeout=config.REQUEST_TIMEOUT_SECONDS)
+            if r.status_code == 200:
                 sent = True
+            else:
+                print(f"  ! Telegram HTTP {r.status_code} (chat {chat_id})")
         except requests.RequestException as e:
-            print(f"  ! error enviando Telegram a {chat_id}: {e}")
+            print(f"  ! Telegram error {chat_id}: {e}")
     return sent
 
 
 def booking_link(origin, dest, triptype, day):
-    tt = "OW" if triptype == "OW" else "RT"
-    date_nodash = day.replace("-", "")
     return (
         f"https://www.flylevel.com/es/booking/flight"
-        f"?origin={origin}&destination={dest}&triptype={tt}"
-        f"&departureDate={date_nodash}&adults=1"
+        f"?origin={origin}&destination={dest}&triptype={triptype}"
+        f"&departureDate={day.replace('-','')}&adults=1"
     )
 
 
-def format_alert(origin, dest, triptype, day, price, threshold, is_promo=False):
-    tipo = "ida sola" if triptype == "OW" else "ida y vuelta"
+def format_alert(origin, dest, triptype, day, price, threshold, currency, is_promo=False):
+    tipo   = "ida sola" if triptype == "OW" else "ida y vuelta"
     titulo = "🔥 <b>¡PROMO LEVEL!</b>" if is_promo else "✈️ <b>¡Oferta LEVEL!</b>"
-    link = booking_link(origin, dest, triptype, day)
+    link   = booking_link(origin, dest, triptype, day)
     return (
         f"{titulo}\n"
         f"<b>{origin} → {dest}</b> ({tipo})\n"
         f"📅 {day}\n"
-        f"💵 <b>{price:.0f} {config.CURRENCY}</b> (umbral &lt; {threshold:.0f})\n"
+        f"💵 <b>{price:.0f} {currency}</b> (umbral &lt; {threshold:.0f})\n"
         f"🔗 <a href=\"{link}\">Reservar en LEVEL</a>"
     )
 
@@ -231,97 +261,84 @@ def format_alert(origin, dest, triptype, day, price, threshold, is_promo=False):
 # Loop principal
 # ---------------------------------------------------------------------------
 
-def months_to_scan(n):
-    """Devuelve [(year, month), ...] para los próximos n meses desde hoy."""
-    today = date.today()
-    out = []
-    y, m = today.year, today.month
-    for _ in range(n):
-        out.append((y, m))
-        m += 1
-        if m > 12:
-            m = 1
-            y += 1
-    return out
-
-
-def get_threshold():
-    """Umbral efectivo: ALERT_THRESHOLD (env) si existe, si no config.THRESHOLD_USD."""
-    try:
-        return float(os.environ.get("ALERT_THRESHOLD", config.THRESHOLD_USD))
-    except ValueError:
-        return float(config.THRESHOLD_USD)
+def get_threshold(group_threshold):
+    """Env ALERT_THRESHOLD sobrescribe el umbral del grupo (útil para testing)."""
+    env = os.environ.get("ALERT_THRESHOLD")
+    if env:
+        try:
+            return float(env)
+        except ValueError:
+            pass
+    return float(group_threshold)
 
 
 def run(dry_run=False):
     from datetime import datetime
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Chequeando...")
-    session = build_session()
-    state = load_state()
-    threshold = get_threshold()
+    session  = build_session()
+    state    = load_state()
     new_alerts = 0
-    checked = 0
+    checked    = 0
+    all_months = all_months_to_scan()
 
-    for (origin, dest) in config.ROUTES:
-        for triptype in config.TRIPTYPES:
-            for (year, month) in months_to_scan(config.MONTHS_AHEAD):
-                checked += 1
-                payload = fetch_calendar(session, origin, dest, triptype, year, month)
-                time.sleep(config.REQUEST_DELAY_SECONDS)
-                if payload is None:
-                    continue
+    for group in config.ROUTE_GROUPS:
+        threshold = get_threshold(group["threshold"])
+        currency  = group["currency"]
 
-                for day, price, tags in parse_prices(payload):
-                    is_promo = config.PROMO_TAG in tags
-                    # Disparador:
-                    #  - ONLY_PROMO=True  -> cualquier día con tag de promo (ignora umbral).
-                    #  - ONLY_PROMO=False -> precio < umbral (la promo solo MARCA la alerta).
-                    if config.ONLY_PROMO:
-                        if not is_promo:
-                            continue
-                    else:
-                        if price >= threshold:
-                            continue
-
-                    promo_txt = " [PROMO]" if is_promo else ""
-                    if dry_run:
-                        print(f"  [match]{promo_txt} {origin}->{dest} {triptype} {day}: {price:.0f}")
-                        new_alerts += 1
+        for (origin, dest) in group["routes"]:
+            for triptype in group["triptypes"]:
+                for (year, month) in all_months:
+                    checked += 1
+                    payload = fetch_calendar(session, origin, dest, triptype, year, month, currency)
+                    time.sleep(config.REQUEST_DELAY_SECONDS)
+                    if payload is None:
                         continue
 
-                    key = offer_key(origin, dest, triptype, day)
-                    prev = state.get(key)
-                    # Avisar si es nueva o si bajó respecto a lo último avisado.
-                    if prev is not None and price >= float(prev):
-                        continue
+                    for day, price, tags in parse_prices(payload):
+                        if not date_is_in_scope(day):
+                            continue
 
-                    msg = format_alert(origin, dest, triptype, day, price, threshold, is_promo)
-                    if send_telegram(msg):
-                        state[key] = price
-                        new_alerts += 1
-                        print(f"  [alerta enviada]{promo_txt} {origin}->{dest} {triptype} {day}: {price:.0f}")
+                        is_promo = config.PROMO_TAG in tags
+                        if config.ONLY_PROMO:
+                            if not is_promo:
+                                continue
+                        else:
+                            if price >= threshold:
+                                continue
+
+                        promo_txt = " [PROMO]" if is_promo else ""
+                        if dry_run:
+                            print(f"  [match]{promo_txt} {origin}->{dest} {triptype} {day}: {price:.0f} {currency}")
+                            new_alerts += 1
+                            continue
+
+                        key  = offer_key(origin, dest, triptype, day, currency)
+                        prev = state.get(key)
+                        if prev is not None and price >= float(prev):
+                            continue
+
+                        msg = format_alert(origin, dest, triptype, day, price, threshold, currency, is_promo)
+                        if send_telegram(msg):
+                            state[key] = price
+                            new_alerts += 1
+                            print(f"  [alerta]{promo_txt} {origin}->{dest} {triptype} {day}: {price:.0f} {currency}")
 
     if not dry_run:
         save_state(state)
 
-    print(
-        f"\nListo. Consultas: {checked}. "
-        f"{'Matches' if dry_run else 'Alertas nuevas'}: {new_alerts}."
-    )
+    print(f"\nListo. Consultas: {checked}. {'Matches' if dry_run else 'Alertas nuevas'}: {new_alerts}.")
     return new_alerts
 
 
 def run_safe(dry_run=False):
-    """Como run() pero atrapa cualquier excepción para que el loop nunca muera."""
     try:
         return run(dry_run=dry_run)
-    except Exception as e:  # noqa: BLE001 - en modo 24/7 queremos seguir vivos
-        print(f"  ! error en la corrida (se ignora y se sigue): {e!r}")
+    except Exception as e:
+        print(f"  ! error en la corrida (se sigue): {e!r}")
         return 0
 
 
 def loop(interval_seconds, dry_run=False):
-    """Corre indefinidamente, una pasada cada interval_seconds."""
     print(f"Modo loop: chequeando cada {interval_seconds}s. Ctrl+C para cortar.")
     while True:
         run_safe(dry_run=dry_run)
@@ -330,13 +347,11 @@ def loop(interval_seconds, dry_run=False):
 
 def main():
     ap = argparse.ArgumentParser(description="Monitor de precios LEVEL -> Telegram")
-    ap.add_argument("--dry-run", action="store_true", help="imprime matches, no envía ni guarda")
-    ap.add_argument("--test-telegram", action="store_true", help="manda un mensaje de prueba y sale")
-    ap.add_argument("--loop", action="store_true", help="corre 24/7 en bucle (no termina)")
-    ap.add_argument(
-        "--interval", type=int, default=int(os.environ.get("CHECK_INTERVAL", "180")),
-        help="segundos entre chequeos en modo --loop (default 180 = 3 min, o env CHECK_INTERVAL)",
-    )
+    ap.add_argument("--dry-run",       action="store_true")
+    ap.add_argument("--test-telegram", action="store_true")
+    ap.add_argument("--loop",          action="store_true")
+    ap.add_argument("--interval", type=int,
+                    default=int(os.environ.get("CHECK_INTERVAL", "180")))
     args = ap.parse_args()
 
     if args.test_telegram:
