@@ -19,10 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v5.6.0
         with:
           python-version: "3.12"
           cache: pip
@@ -30,10 +30,8 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # Persiste state.json entre corridas para no repetir alertas.
-      # La key cambia en cada run; restore-keys recupera el cache más reciente.
       - name: Restore state cache
-        uses: actions/cache@v4
+        uses: actions/cache@v4.2.3
         with:
           path: state.json
           key: level-state-${{ github.run_id }}
