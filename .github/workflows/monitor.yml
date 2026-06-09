@@ -2,8 +2,9 @@ name: monitor-level
 
 on:
   schedule:
-    # Cada 30 min. Ojo: el cron de GitHub no es exacto y puede demorarse en horas pico.
-    - cron: "*/30 * * * *"
+    # Cada 5 min (mínimo posible en GitHub Actions).
+    # En horas pico puede demorarse 5-15 min extra, pero para atrapar promos alcanza.
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}   # permite correrlo a mano desde la pestaña Actions
 
 permissions:
