@@ -25,6 +25,8 @@ ROUTE_GROUPS = [
         "threshold": 350,
         "currency": "USD",
         "triptypes": ["OW", "RT"],
+        # Si el precio baja de este valor se manda en CADA corrida (no se deduplica).
+        "super_alert_threshold": 50,
     },
     {
         "name": "USA",
@@ -37,6 +39,7 @@ ROUTE_GROUPS = [
         "threshold": 300,
         "currency": "EUR",
         "triptypes": ["OW", "RT"],
+        "super_alert_threshold": 50,
     },
 ]
 

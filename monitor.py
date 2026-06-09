@@ -306,22 +306,33 @@ def run(dry_run=False):
                             if price >= threshold:
                                 continue
 
+                        super_threshold = group.get("super_alert_threshold", 0)
+                        is_super  = price < super_threshold
                         promo_txt = " [PROMO]" if is_promo else ""
+                        super_txt = " [SUPER]" if is_super else ""
+
                         if dry_run:
-                            print(f"  [match]{promo_txt} {origin}->{dest} {triptype} {day}: {price:.0f} {currency}")
+                            print(f"  [match]{promo_txt}{super_txt} {origin}->{dest} {triptype} {day}: {price:.0f} {currency}")
                             new_alerts += 1
                             continue
 
                         key  = offer_key(origin, dest, triptype, day, currency)
                         prev = state.get(key)
-                        if prev is not None and price >= float(prev):
-                            continue
+
+                        if is_super:
+                            # Precio extraordinariamente bajo: manda siempre, sin deduplicar.
+                            pass
+                        else:
+                            # Precio normal: manda solo si es nueva o bajó.
+                            if prev is not None and price >= float(prev):
+                                continue
 
                         msg = format_alert(origin, dest, triptype, day, price, threshold, currency, is_promo)
                         if send_telegram(msg):
-                            state[key] = price
+                            if not is_super:
+                                state[key] = price  # solo guarda en state si no es super
                             new_alerts += 1
-                            print(f"  [alerta]{promo_txt} {origin}->{dest} {triptype} {day}: {price:.0f} {currency}")
+                            print(f"  [alerta]{promo_txt}{super_txt} {origin}->{dest} {triptype} {day}: {price:.0f} {currency}")
 
     if not dry_run:
         save_state(state)
