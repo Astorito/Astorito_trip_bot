@@ -254,6 +254,8 @@ def get_threshold():
 
 
 def run(dry_run=False):
+    from datetime import datetime
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Chequeando...")
     session = build_session()
     state = load_state()
     threshold = get_threshold()

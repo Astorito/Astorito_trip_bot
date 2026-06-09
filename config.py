@@ -32,7 +32,7 @@ TRIPTYPES = ["OW", "RT"]
 # Cuántos meses hacia adelante escanear en cada corrida.
 # Bajado a 4 para la cadencia de 3 min (menos pedidos / pasadas más rápidas / menos
 # riesgo de bloqueo). Si querés cobertura anual de nuevo, poné 12.
-MONTHS_AHEAD = 4
+MONTHS_AHEAD = 6
 
 # Pausa (segundos) entre consultas, para no abusar del sitio.
 REQUEST_DELAY_SECONDS = 0.5
