@@ -42,8 +42,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        # 5 pasadas con 1 min de pausa = cobertura efectiva cada ~1 min
-        # (el cron dispara cada 5 min, este bloque cubre el tiempo entre disparos)
+          ALERT_THRESHOLD: "650"
         run: |
           for i in 1 2 3 4 5; do
             echo "--- Pasada $i/5 ---"
