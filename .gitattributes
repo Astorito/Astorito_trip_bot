@@ -1,0 +1,3 @@
+# Normaliza todo a LF: el repo se despliega en Linux (Oracle Cloud), y CRLF rompería
+# tanto el archivo .service de systemd como los valores del .env.
+* text=auto eol=lf

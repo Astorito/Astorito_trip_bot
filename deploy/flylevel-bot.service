@@ -1,0 +1,17 @@
+[Unit]
+Description=Bot de alertas de precios LEVEL (Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/flylevel-bot
+EnvironmentFile=/home/ubuntu/flylevel-bot/.env
+# -u = salida sin buffer, para verla en vivo con journalctl
+ExecStart=/home/ubuntu/flylevel-bot/.venv/bin/python -u monitor.py --loop
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
