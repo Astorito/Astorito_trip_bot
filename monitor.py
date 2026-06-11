@@ -245,13 +245,18 @@ def booking_link(origin, dest, triptype, day):
 
 
 def format_alert(origin, dest, triptype, day, price, threshold, currency, is_promo=False):
-    tipo   = "ida sola" if triptype == "OW" else "ida y vuelta"
     titulo = "🔥 <b>¡PROMO LEVEL!</b>" if is_promo else "✈️ <b>¡Oferta LEVEL!</b>"
     link   = booking_link(origin, dest, triptype, day)
+    if triptype == "OW":
+        fecha_line = f"📅 Salida: {day}"
+        tipo_line  = "Ida sola"
+    else:
+        fecha_line = f"📅 Salida: {day}\n↩️ Vuelta: elegís al reservar (precio mínimo disponible)"
+        tipo_line  = "Ida y vuelta"
     return (
         f"{titulo}\n"
-        f"<b>{origin} → {dest}</b> ({tipo})\n"
-        f"📅 {day}\n"
+        f"<b>{origin} → {dest}</b> ({tipo_line})\n"
+        f"{fecha_line}\n"
         f"💵 <b>{price:.0f} {currency}</b> (umbral &lt; {threshold:.0f})\n"
         f"🔗 <a href=\"{link}\">Reservar en LEVEL</a>"
     )
