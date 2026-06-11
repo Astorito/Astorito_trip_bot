@@ -236,17 +236,18 @@ def send_telegram(text):
     return sent
 
 
-def booking_link(origin, dest, triptype, day):
+def booking_link(origin, dest, triptype, day, currency="USD"):
     return (
-        f"https://www.flylevel.com/es/booking/flight"
-        f"?origin={origin}&destination={dest}&triptype={triptype}"
-        f"&departureDate={day.replace('-','')}&adults=1"
+        f"https://www.flylevel.com/Flight/Select"
+        f"?triptype={triptype}&o1={origin}&d1={dest}&dd1={day}"
+        f"&ADT=1&CHD=0&INL=0&r=false&mm=false"
+        f"&forcedCurrency={currency}&forcedCulture=es-ES&newecom=true"
     )
 
 
 def format_alert(origin, dest, triptype, day, price, threshold, currency, is_promo=False):
     titulo = "🔥 <b>¡PROMO LEVEL!</b>" if is_promo else "✈️ <b>¡Oferta LEVEL!</b>"
-    link   = booking_link(origin, dest, triptype, day)
+    link   = booking_link(origin, dest, triptype, day, currency)
     if triptype == "OW":
         fecha_line = f"📅 Salida: {day}"
         tipo_line  = "Ida sola"
