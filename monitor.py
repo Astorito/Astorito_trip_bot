@@ -11,9 +11,11 @@ Uso:
 import argparse
 import json
 import os
+import smtplib
 import sys
 import time
 from datetime import date
+from email.mime.text import MIMEText
 
 import requests
 
@@ -236,6 +238,52 @@ def send_telegram(text):
     return sent
 
 
+# ---------------------------------------------------------------------------
+# Email
+# ---------------------------------------------------------------------------
+
+def send_email(subject, html_body):
+    """Envía un mail via Gmail SMTP. Requiere GMAIL_USER y GMAIL_APP_PASSWORD."""
+    gmail_user = os.environ.get("GMAIL_USER")
+    gmail_pass = os.environ.get("GMAIL_APP_PASSWORD")
+    to_addr    = os.environ.get("ALERT_EMAIL", "juanchi.martinezv@gmail.com")
+    if not gmail_user or not gmail_pass:
+        return False
+    msg = MIMEText(html_body, "html", "utf-8")
+    msg["Subject"] = subject
+    msg["From"]    = gmail_user
+    msg["To"]      = to_addr
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as s:
+            s.starttls()
+            s.login(gmail_user, gmail_pass)
+            s.sendmail(gmail_user, [to_addr], msg.as_string())
+        return True
+    except Exception as e:
+        print(f"  ! email error: {e}")
+        return False
+
+
+def format_email_body(origin, dest, triptype, day, price, threshold, currency, is_promo, link):
+    titulo = "🔥 PROMO LEVEL" if is_promo else "✈️ Oferta LEVEL"
+    tipo   = "Ida sola" if triptype == "OW" else "Ida y vuelta"
+    vuelta = "" if triptype == "OW" else "<br>↩️ <b>Vuelta:</b> elegís al reservar (precio mínimo disponible)"
+    return (
+        f"<h2>{titulo}</h2>"
+        f"<p><b>{origin} → {dest}</b> ({tipo})<br>"
+        f"📅 <b>Salida:</b> {day}{vuelta}<br>"
+        f"💵 <b>{price:.0f} {currency}</b> (umbral &lt; {threshold:.0f})</p>"
+        f"<p><a href='{link}'>Reservar en LEVEL</a></p>"
+    )
+
+
+def notify(subject, telegram_text, email_html):
+    """Manda Telegram y email en paralelo. Devuelve True si al menos uno llegó."""
+    tg = send_telegram(telegram_text)
+    em = send_email(subject, email_html)
+    return tg or em
+
+
 def booking_link(origin, dest, triptype, day, currency="USD"):
     return (
         f"https://www.flylevel.com/Flight/Select"
@@ -246,21 +294,26 @@ def booking_link(origin, dest, triptype, day, currency="USD"):
 
 
 def format_alert(origin, dest, triptype, day, price, threshold, currency, is_promo=False):
-    titulo = "🔥 <b>¡PROMO LEVEL!</b>" if is_promo else "✈️ <b>¡Oferta LEVEL!</b>"
-    link   = booking_link(origin, dest, triptype, day, currency)
+    """Devuelve (subject, telegram_text, email_html)."""
+    titulo_plain = "PROMO LEVEL" if is_promo else "Oferta LEVEL"
+    titulo_html  = "🔥 <b>¡PROMO LEVEL!</b>" if is_promo else "✈️ <b>¡Oferta LEVEL!</b>"
+    link = booking_link(origin, dest, triptype, day, currency)
     if triptype == "OW":
-        fecha_line = f"📅 Salida: {day}"
+        fecha_tg   = f"📅 Salida: {day}"
         tipo_line  = "Ida sola"
     else:
-        fecha_line = f"📅 Salida: {day}\n↩️ Vuelta: elegís al reservar (precio mínimo disponible)"
+        fecha_tg   = f"📅 Salida: {day}\n↩️ Vuelta: elegís al reservar (precio mínimo disponible)"
         tipo_line  = "Ida y vuelta"
-    return (
-        f"{titulo}\n"
+    subject = f"[LEVEL] {titulo_plain} {origin}→{dest} {day} {price:.0f}{currency}"
+    tg_text = (
+        f"{titulo_html}\n"
         f"<b>{origin} → {dest}</b> ({tipo_line})\n"
-        f"{fecha_line}\n"
+        f"{fecha_tg}\n"
         f"💵 <b>{price:.0f} {currency}</b> (umbral &lt; {threshold:.0f})\n"
         f"🔗 <a href=\"{link}\">Reservar en LEVEL</a>"
     )
+    email_html = format_email_body(origin, dest, triptype, day, price, threshold, currency, is_promo, link)
+    return subject, tg_text, email_html
 
 
 # ---------------------------------------------------------------------------
@@ -333,10 +386,12 @@ def run(dry_run=False):
                             if prev is not None and price >= float(prev):
                                 continue
 
-                        msg = format_alert(origin, dest, triptype, day, price, threshold, currency, is_promo)
-                        if send_telegram(msg):
+                        subject, tg_text, email_html = format_alert(
+                            origin, dest, triptype, day, price, threshold, currency, is_promo
+                        )
+                        if notify(subject, tg_text, email_html):
                             if not is_super:
-                                state[key] = price  # solo guarda en state si no es super
+                                state[key] = price
                             new_alerts += 1
                             print(f"  [alerta]{promo_txt}{super_txt} {origin}->{dest} {triptype} {day}: {price:.0f} {currency}")
 
@@ -363,9 +418,10 @@ def loop(interval_seconds, dry_run=False):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Monitor de precios LEVEL -> Telegram")
+    ap = argparse.ArgumentParser(description="Monitor de precios LEVEL -> Telegram + Email")
     ap.add_argument("--dry-run",       action="store_true")
     ap.add_argument("--test-telegram", action="store_true")
+    ap.add_argument("--test-email",    action="store_true")
     ap.add_argument("--loop",          action="store_true")
     ap.add_argument("--interval", type=int,
                     default=int(os.environ.get("CHECK_INTERVAL", "180")))
@@ -373,6 +429,14 @@ def main():
 
     if args.test_telegram:
         ok = send_telegram("✅ Test: el bot de LEVEL está conectado a este chat.")
+        sys.exit(0 if ok else 1)
+
+    if args.test_email:
+        ok = send_email(
+            "[LEVEL] Test de alerta por email",
+            "<h2>✅ Test</h2><p>El bot de LEVEL está enviando emails correctamente.</p>"
+        )
+        print("Email enviado OK" if ok else "Error enviando email")
         sys.exit(0 if ok else 1)
 
     if args.loop:
