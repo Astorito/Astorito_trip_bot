@@ -2,10 +2,8 @@ name: monitor-level
 
 on:
   schedule:
-    # Cada 5 min (mínimo posible en GitHub Actions).
-    # En horas pico puede demorarse 5-15 min extra, pero para atrapar promos alcanza.
     - cron: "*/5 * * * *"
-  workflow_dispatch: {}   # permite correrlo a mano desde la pestaña Actions
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -38,12 +36,6 @@ jobs:
           restore-keys: |
             level-state-
 
-      - name: Test email
-        env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-        run: python monitor.py --test-email
-
       - name: Run monitor
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -51,9 +43,12 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           ALERT_THRESHOLD: "350"
+        # 50 pasadas x 1 min = ~50 min de cobertura continua por run.
+        # El cron dispara cada 5 min pero GitHub lo corre cada ~45-60 min en la práctica;
+        # con runs solapados (cancel-in-progress: false) siempre hay uno activo.
         run: |
-          for i in 1 2 3 4 5; do
-            echo "--- Pasada $i/5 ---"
+          for i in $(seq 1 50); do
+            echo "--- Pasada $i/50 ---"
             python monitor.py
-            if [ $i -lt 5 ]; then sleep 60; fi
+            if [ $i -lt 50 ]; then sleep 60; fi
           done
